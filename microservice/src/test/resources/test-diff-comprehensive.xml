@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                   http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Table operations -->
+    <changeSet id="1" author="testauthor">
+        <createTable tableName="users" schemaName="public">
+            <column name="id" type="bigint"/>
+            <column name="name" type="varchar(255)"/>
+            <column name="email" type="varchar(255)"/>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="2" author="testauthor">
+        <createTable tableName="orders" schemaName="sales">
+            <column name="order_id" type="bigint"/>
+            <column name="user_id" type="bigint"/>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="3" author="testauthor">
+        <dropTable tableName="legacy_table" schemaName="public"/>
+    </changeSet>
+
+    <!-- Column operations -->
+    <changeSet id="4" author="testauthor">
+        <addColumn tableName="users" schemaName="public">
+            <column name="phone" type="varchar(20)"/>
+            <column name="address" type="text"/>
+        </addColumn>
+    </changeSet>
+
+    <changeSet id="5" author="testauthor">
+        <dropColumn tableName="users" schemaName="public" columnName="address"/>
+    </changeSet>
+
+    <changeSet id="6" author="testauthor">
+        <modifyDataType tableName="users" schemaName="public" columnName="name" newDataType="varchar(500)"/>
+    </changeSet>
+
+    <changeSet id="7" author="testauthor">
+        <renameColumn tableName="users" schemaName="public" oldColumnName="phone" newColumnName="mobile"/>
+    </changeSet>
+
+    <!-- Primary key operations -->
+    <changeSet id="8" author="testauthor">
+        <addPrimaryKey tableName="users" schemaName="public" constraintName="pk_users" columnNames="id"/>
+    </changeSet>
+
+    <changeSet id="9" author="testauthor">
+        <dropPrimaryKey tableName="old_table" schemaName="public"/>
+    </changeSet>
+
+    <!-- Unique constraint operations -->
+    <changeSet id="10" author="testauthor">
+        <addUniqueConstraint tableName="users" schemaName="public" constraintName="uq_email" columnNames="email"/>
+    </changeSet>
+
+    <changeSet id="11" author="testauthor">
+        <dropUniqueConstraint tableName="users" schemaName="public" constraintName="uq_old"/>
+    </changeSet>
+
+    <!-- Foreign key operations -->
+    <changeSet id="12" author="testauthor">
+        <addForeignKeyConstraint baseTableName="orders" baseTableSchemaName="sales"
+                                  constraintName="fk_orders_user" baseColumnNames="user_id"
+                                  referencedTableName="users" referencedColumnNames="id"/>
+    </changeSet>
+
+    <changeSet id="13" author="testauthor">
+        <dropForeignKeyConstraint baseTableName="orders" baseTableSchemaName="sales" constraintName="fk_old"/>
+    </changeSet>
+
+    <!-- Check constraint operations -->
+    <changeSet id="14" author="testauthor">
+        <addCheckConstraint tableName="users" schemaName="public" constraintName="chk_name" constraintText="length(name) > 0"/>
+    </changeSet>
+
+    <changeSet id="15" author="testauthor">
+        <dropCheckConstraint tableName="users" schemaName="public" constraintName="chk_old"/>
+    </changeSet>
+
+    <!-- Index operations -->
+    <changeSet id="16" author="testauthor">
+        <createIndex indexName="idx_email" tableName="users" schemaName="public" columnNames="email"/>
+    </changeSet>
+
+    <changeSet id="17" author="testauthor">
+        <dropIndex indexName="idx_old" tableName="users" schemaName="public"/>
+    </changeSet>
+
+    <!-- View operations -->
+    <changeSet id="18" author="testauthor">
+        <createView viewName="active_users" schemaName="public">SELECT * FROM users WHERE active = true</createView>
+    </changeSet>
+
+    <changeSet id="19" author="testauthor">
+        <dropView viewName="old_view" schemaName="public"/>
+    </changeSet>
+
+    <!-- Schema operations -->
+    <changeSet id="20" author="testauthor">
+        <createSchema schemaName="analytics"/>
+    </changeSet>
+
+    <changeSet id="21" author="testauthor">
+        <dropSchema schemaName="legacy"/>
+    </changeSet>
+
+</databaseChangeLog>

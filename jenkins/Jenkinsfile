@@ -1,0 +1,270 @@
+/**
+ * SchemaSync Pipeline — schema-apply
+ *
+ * Two modes controlled by the APPLY_DIFF boolean parameter:
+ *   APPLY_DIFF=false → Generate diff (compare test ↔ prod), archive XML artifact
+ *   APPLY_DIFF=true  → Apply the approved diff to production
+ *
+ * The Telegram bot triggers this job via /buildWithParameters and polls
+ * for the schema-diff-*.xml artifact.
+ */
+pipeline {
+    agent any
+
+    parameters {
+        // ── Internal (set by bot, hidden from user via EXCLUDED_PARAMS) ──
+        booleanParam(name: 'APPLY_DIFF',    defaultValue: false, description: 'false = generate diff only, true = apply approved diff')
+        string(name: 'DIFF_ID',             defaultValue: '',    description: 'Microservice diff ID (set on approve)')
+        string(name: 'BOT_USER_ID',         defaultValue: '',    description: 'Telegram chat ID of the requesting user')
+        string(name: 'PIPELINE_NAME',       defaultValue: '',    description: 'Pipeline name echoed back to bot')
+
+        // ── User-configurable (shown in Telegram bot) ──────────────────
+        string(name: 'SCHEMA_NAME',         defaultValue: 'public',                                          description: 'Schema to compare')
+        string(name: 'SOURCE_DB_URL',       defaultValue: 'jdbc:postgresql://schemasync-postgres:5432/test_db', description: 'Source (test) database JDBC URL')
+        string(name: 'TARGET_DB_URL',       defaultValue: 'jdbc:postgresql://schemasync-postgres:5432/prod_db', description: 'Target (prod) database JDBC URL')
+        string(name: 'DB_USERNAME',         defaultValue: '',                                                 description: 'Database username (optional, for logging only)')
+        password(name: 'DB_PASSWORD',       defaultValue: '',                                                 description: 'Database password (no longer sent to API — managed server-side)')
+    }
+
+    environment {
+        MICROSERVICE_URL = 'http://schema-sync:8080'
+        API_KEY          = credentials('schemasync-api-key')
+        GIT_SHA          = ''
+    }
+
+    options {
+        timeout(time: 10, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timestamps()
+    }
+
+    stages {
+
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    echo "Mode: ${params.APPLY_DIFF ? 'APPLY' : 'DIFF'}"
+                    echo "Schema: ${params.SCHEMA_NAME}"
+                    echo "Source DB: ${params.SOURCE_DB_URL}"
+                    echo "Target DB: ${params.TARGET_DB_URL}"
+                    echo "Triggered by chat: ${params.BOT_USER_ID}"
+
+                    env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    echo "Git SHA: ${env.GIT_SHA}"
+
+                    if (!params.SOURCE_DB_URL?.trim()) {
+                        error('SOURCE_DB_URL is required')
+                    }
+                    if (!params.TARGET_DB_URL?.trim()) {
+                        error('TARGET_DB_URL is required')
+                    }
+                }
+            }
+        }
+
+        stage('Build & Tag Images') {
+            steps {
+                script {
+                    def version = "0.1.0"
+                    def tag = "${version}-${env.BUILD_NUMBER}-${env.GIT_SHA}"
+                    echo "Tagging images as: ${tag}"
+
+                    sh """
+                        docker build -t schemasync/microservice:${tag} \
+                            --build-arg APP_VERSION=${version} \
+                            --build-arg GIT_SHA=${env.GIT_SHA} \
+                            ./microservice
+
+                        docker tag schemasync/microservice:${tag} schemasync/microservice:latest
+
+                        docker build -t schemasync/bot:${tag} \
+                            --build-arg APP_VERSION=${version} \
+                            --build-arg GIT_SHA=${env.GIT_SHA} \
+                            ./bot
+
+                        docker tag schemasync/bot:${tag} schemasync/bot:latest
+                    """
+                    echo "Images tagged: schemasync/microservice:${tag}, schemasync/bot:${tag}"
+                }
+            }
+        }
+
+        stage('Security Scans') {
+            parallel {
+                stage('OWASP Dependency-Check') {
+                    steps {
+                        script {
+                            echo "Running OWASP dependency-check on microservice..."
+                            sh """
+                                cd microservice && \
+                                mvn org.owasp:dependency-check-maven:check \
+                                    -DfailBuildOnCVSS=7 \
+                                    -Dformat=HTML || true
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'microservice/target/dependency-check-report.*', allowEmptyArchive: true
+                        }
+                    }
+                }
+                stage('Trivy Image Scan') {
+                    steps {
+                        script {
+                            echo "Scanning images for CVEs with Trivy..."
+                            sh """
+                                trivy image --exit-code 1 --severity HIGH,CRITICAL \
+                                    --ignore-unfixed schemasync/microservice:latest || true
+                                trivy image --exit-code 1 --severity HIGH,CRITICAL \
+                                    --ignore-unfixed schemasync/bot:latest || true
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Generate Diff') {
+            when { expression { return !params.APPLY_DIFF } }
+            steps {
+                script {
+                    def payload = """
+                    {
+                        "author": "bot-user-${params.BOT_USER_ID}",
+                        "description": "Diff triggered from Telegram (pipeline: ${params.PIPELINE_NAME})",
+                        "includeSchemas": ["${params.SCHEMA_NAME}"]
+                    }
+                    """.stripIndent()
+
+                    // Step 1: Create diff request
+                    def createResp = sh(
+                        script: """
+                            curl -sf -X POST '${MICROSERVICE_URL}/api/diffs' \\
+                                 -H 'Content-Type: application/json' \\
+                                 -H 'X-API-KEY: ${API_KEY}' \\
+                                 -d '${payload}'
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "Create Diff response: ${createResp}"
+
+                    def json = readJSON text: createResp
+                    def diffId = json.id
+                    env.DIFF_ID = diffId.toString()
+                    echo "Diff ID: ${diffId}"
+
+                    // Step 2: Poll until status is VALID or INVALID (max 60 attempts × 5s = 5 min)
+                    def finalStatus = 'PENDING'
+                    for (int i = 0; i < 60; i++) {
+                        sleep(time: 5, unit: 'SECONDS')
+                        def statusResp = sh(
+                            script: """
+                                curl -sf '${MICROSERVICE_URL}/api/diffs/${diffId}' \\
+                                     -H 'X-API-KEY: ${API_KEY}'
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        def statusJson = readJSON text: statusResp
+                        finalStatus = statusJson.status
+                        echo "Poll #${i + 1}: status = ${finalStatus}"
+                        if (finalStatus == 'VALID' || finalStatus == 'INVALID') break
+                    }
+
+                    if (finalStatus != 'VALID') {
+                        error("Diff generation failed. Final status: ${finalStatus}")
+                    }
+
+                    // Step 3: Download the diff XML artifact
+                    sh """
+                        curl -sf '${MICROSERVICE_URL}/api/diffs/${diffId}/content' \\
+                             -H 'X-API-KEY: ${API_KEY}' \\
+                             -o schema-diff-${diffId}.xml
+                    """
+                    echo "Diff XML downloaded: schema-diff-${diffId}.xml"
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'schema-diff-*.xml', fingerprint: true
+                }
+            }
+        }
+
+        stage('Apply Diff') {
+            when { expression { return params.APPLY_DIFF } }
+            steps {
+                script {
+                    def diffId = params.DIFF_ID
+                    if (!diffId?.trim()) {
+                        error('DIFF_ID is required for apply mode')
+                    }
+
+                    // Step 1: Approve the diff
+                    def approveStatus = sh(
+                        script: """
+                            curl -sf -o /dev/null -w '%{http_code}' \\
+                                 -X POST '${MICROSERVICE_URL}/api/diffs/${diffId}/approve' \\
+                                 -H 'X-API-KEY: ${API_KEY}'
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "Approve response: HTTP ${approveStatus}"
+
+                    if (approveStatus != '204' && approveStatus != '200') {
+                        echo "Warning: approve returned HTTP ${approveStatus} (diff may already be approved)"
+                    }
+
+                    // Step 2: Apply filtered changesets to production
+                    // NOTE: JDBC credentials are managed server-side in the microservice config.
+                    // The API no longer accepts credentials in the request body.
+                    def applyPayload = """
+                    {
+                        "selectedChangeSetIds": [],
+                        "dbType": "POSTGRESQL"
+                    }
+                    """.stripIndent()
+
+                    def applyResp = sh(
+                        script: """
+                            curl -sf -X POST '${MICROSERVICE_URL}/api/diffs/${diffId}/apply-filtered' \\
+                                 -H 'Content-Type: application/json' \\
+                                 -H 'X-API-KEY: ${API_KEY}' \\
+                                 -d '${applyPayload}'
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "Apply result: ${applyResp}"
+                }
+            }
+        }
+
+        stage('Validation Log') {
+            when { expression { return env.DIFF_ID != null && env.DIFF_ID != '' } }
+            steps {
+                script {
+                    def logResp = sh(
+                        script: """
+                            curl -sf '${MICROSERVICE_URL}/api/diffs/${env.DIFF_ID}/validation-log' \\
+                                 -H 'X-API-KEY: ${API_KEY}' || echo 'No validation log available'
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "=== Validation Log ===\n${logResp}"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ SchemaSync pipeline completed successfully (mode: ${params.APPLY_DIFF ? 'APPLY' : 'DIFF'})"
+        }
+        failure {
+            echo "❌ SchemaSync pipeline failed (mode: ${params.APPLY_DIFF ? 'APPLY' : 'DIFF'})"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

@@ -1,0 +1,190 @@
+<?xml version="1.1" encoding="UTF-8"?>
+<project>
+  <description>SchemaSync — generate and apply database schema diffs via Liquibase.
+Triggered by the Telegram bot (/pipelines → /diff → /approve) or manually from Jenkins UI.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <!-- Internal params (hidden from Telegram bot via EXCLUDED_PARAMS) -->
+        <hudson.model.BooleanParameterDefinition>
+          <name>APPLY_DIFF</name>
+          <description>false = generate diff only, true = apply approved diff to production</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>DIFF_ID</name>
+          <description>Microservice diff ID (auto-set by diff stage, required for apply)</description>
+          <defaultValue></defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>BOT_USER_ID</name>
+          <description>Telegram chat ID of the requesting user</description>
+          <defaultValue></defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PIPELINE_NAME</name>
+          <description>Pipeline name echoed back to Telegram bot</description>
+          <defaultValue></defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <!-- User-configurable params (shown in Telegram bot as inline buttons) -->
+        <hudson.model.StringParameterDefinition>
+          <name>SCHEMA_NAME</name>
+          <description>PostgreSQL schema to compare (e.g. public, app_schema)</description>
+          <defaultValue>public</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>SOURCE_DB_URL</name>
+          <description>Source (test) database JDBC URL</description>
+          <defaultValue>jdbc:postgresql://schemasync-postgres:5432/test_db</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>TARGET_DB_URL</name>
+          <description>Target (prod) database JDBC URL</description>
+          <defaultValue>jdbc:postgresql://schemasync-postgres:5432/prod_db</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>DB_USERNAME</name>
+          <description>Database username (must have DDL access on both DBs)</description>
+          <defaultValue>sync_user</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>DB_PASSWORD</name>
+          <description>Database password (no longer sent to API — managed server-side)</description>
+          <defaultValue></defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <scm class="hudson.scm.NullSCM"/>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers>
+    <hudson.triggers.SCMTrigger>
+      <spec></spec>
+    </hudson.triggers.SCMTrigger>
+  </triggers>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command><![CDATA[#!/bin/bash
+set -euo pipefail
+
+MICROSERVICE_URL="http://schema-sync:8080"
+API_KEY="${API_KEY:?Set API_KEY via Jenkins credentials binding or environment injection}"
+
+echo "========================================="
+echo "  SchemaSync Pipeline"
+echo "  Mode: $([ "$APPLY_DIFF" = "true" ] && echo "APPLY" || echo "DIFF")"
+echo "  Schema: ${SCHEMA_NAME}"
+echo "  Source: ${SOURCE_DB_URL}"
+echo "  Target: ${TARGET_DB_URL}"
+echo "  Bot User: ${BOT_USER_ID:-manual}"
+echo "========================================="
+
+if [ "$APPLY_DIFF" = "true" ]; then
+    #
+    # ═══ APPLY MODE ═══════════════════════════════════════
+    #
+    echo ""
+    echo ">>> Step 1: Approve diff #${DIFF_ID}"
+    APPROVE_HTTP=$(curl -sf -o /dev/null -w '%{http_code}' \
+        -X POST "${MICROSERVICE_URL}/api/diffs/${DIFF_ID}/approve" \
+        -H "X-API-KEY: ${API_KEY}" || true)
+    echo "    Approve response: HTTP ${APPROVE_HTTP}"
+
+    echo ""
+    echo ">>> Step 2: Apply changesets to production"
+    # NOTE: JDBC credentials are managed server-side in the microservice config.
+    # The API no longer accepts credentials in the request body.
+    APPLY_RESULT=$(curl -sf -X POST "${MICROSERVICE_URL}/api/diffs/${DIFF_ID}/apply-filtered" \
+        -H "Content-Type: application/json" \
+        -H "X-API-KEY: ${API_KEY}" \
+        -d '{
+            "selectedChangeSetIds": [],
+            "dbType": "POSTGRESQL"
+        }')
+    echo "    Apply result: ${APPLY_RESULT}"
+    echo ""
+    echo "✅ Schema changes applied successfully"
+
+else
+    #
+    # ═══ DIFF MODE ════════════════════════════════════════
+    #
+    echo ""
+    echo ">>> Step 1: Create diff request"
+    CREATE_RESP=$(curl -sf -X POST "${MICROSERVICE_URL}/api/diffs" \
+        -H "Content-Type: application/json" \
+        -H "X-API-KEY: ${API_KEY}" \
+        -d "{
+            \"author\": \"bot-user-${BOT_USER_ID:-manual}\",
+            \"description\": \"Diff from Jenkins (pipeline: ${PIPELINE_NAME:-schema-apply})\",
+            \"includeSchemas\": [\"${SCHEMA_NAME}\"]
+        }")
+    echo "    Response: ${CREATE_RESP}"
+
+    # Extract diff ID using built-in tools (no jq required)
+    DIFF_ID=$(echo "$CREATE_RESP" | sed 's/.*"id":\([0-9]*\).*/\1/')
+    echo "    Diff ID: ${DIFF_ID}"
+
+    echo ""
+    echo ">>> Step 2: Poll for completion (max 5 minutes)"
+    for i in $(seq 1 60); do
+        sleep 5
+        STATUS_RESP=$(curl -sf "${MICROSERVICE_URL}/api/diffs/${DIFF_ID}" \
+            -H "X-API-KEY: ${API_KEY}")
+        STATUS=$(echo "$STATUS_RESP" | sed 's/.*"status":"\([A-Z_]*\)".*/\1/')
+        echo "    Poll #${i}: status = ${STATUS}"
+
+        if [ "$STATUS" = "VALID" ] || [ "$STATUS" = "INVALID" ]; then
+            break
+        fi
+    done
+
+    if [ "$STATUS" != "VALID" ]; then
+        echo "❌ Diff generation failed. Final status: ${STATUS}"
+        # Still try to get validation log for debugging
+        curl -sf "${MICROSERVICE_URL}/api/diffs/${DIFF_ID}/validation-log" \
+            -H "X-API-KEY: ${API_KEY}" || true
+        exit 1
+    fi
+
+    echo ""
+    echo ">>> Step 3: Download diff XML artifact"
+    curl -sf "${MICROSERVICE_URL}/api/diffs/${DIFF_ID}/content" \
+        -H "X-API-KEY: ${API_KEY}" \
+        -o "schema-diff-${DIFF_ID}.xml"
+    echo "    Downloaded: schema-diff-${DIFF_ID}.xml ($(wc -c < schema-diff-${DIFF_ID}.xml) bytes)"
+
+    echo ""
+    echo ">>> Step 4: Validation log"
+    curl -sf "${MICROSERVICE_URL}/api/diffs/${DIFF_ID}/validation-log" \
+        -H "X-API-KEY: ${API_KEY}" || echo "    (no log available)"
+
+    echo ""
+    echo "✅ Diff generated successfully (ID: ${DIFF_ID})"
+fi
+]]></command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers>
+    <hudson.tasks.ArtifactArchiver>
+      <artifacts>schema-diff-*.xml</artifacts>
+      <allowEmptyArchive>true</allowEmptyArchive>
+      <onlyIfSuccessful>false</onlyIfSuccessful>
+      <fingerprint>true</fingerprint>
+    </hudson.tasks.ArtifactArchiver>
+  </publishers>
+  <buildWrappers/>
+</project>

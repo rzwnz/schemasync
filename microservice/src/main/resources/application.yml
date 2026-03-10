@@ -1,0 +1,70 @@
+server:
+  port: 8080
+
+# application.yml
+security:
+  apiKey: ${API_KEY}
+
+spring:
+  datasource:
+    url: ${METADB_URL:jdbc:postgresql://localhost:5432/schema_sync_db}
+    username: ${METADB_USER:sync_user}
+    password: ${METADB_PASS:sync_pass}
+    hikari:
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:10}
+      minimum-idle: ${HIKARI_MIN_IDLE:5}
+      connection-timeout: ${HIKARI_CONNECTION_TIMEOUT:30000}
+      idle-timeout: ${HIKARI_IDLE_TIMEOUT:600000}
+      max-lifetime: ${HIKARI_MAX_LIFETIME:1800000}
+      pool-name: schemasync-pool
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+
+# Validation DB settings (used by DiffValidationService)
+validation:
+  url: ${VALIDATION_DB_URL:jdbc:postgresql://localhost:5432/validation_db}
+  username: ${VALIDATION_DB_USER:val_user}
+  password: ${VALIDATION_DB_PASS:val_pass}
+
+# Test and Prod DB settings for diff generation
+testdb:
+  url: ${TEST_DB_URL:jdbc:postgresql://servertest:5432/myapp}
+  username: ${TEST_DB_USER:schema_admin}
+  password: ${TEST_DB_PASS}
+proddb:
+  url: ${PROD_DB_URL:jdbc:postgresql://serverprod:5432/myapp}
+  username: ${PROD_DB_USER:schema_admin}
+  password: ${PROD_DB_PASS}
+
+spring.liquibase:
+  enabled: true
+  change-log: classpath:db/changelog/db.changelog-master.yaml
+
+# Jenkins settings (if using)
+jenkins:
+  url: ${JENKINS_URL:http://localhost:8081}
+  user: ${JENKINS_USER}
+  token: ${JENKINS_TOKEN}
+  jobName: ${JENKINS_JOB_NAME:schema-apply}
+
+# OpenAPI config (Springdoc + Scalar)
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: false
+  default-produces-media-type: application/json
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when_authorized

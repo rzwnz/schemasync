@@ -1,0 +1,12 @@
+logging:
+  level:
+    root: INFO
+    com.example.schemasyncbot: INFO
+
+bot:
+  token: ${TELEGRAM_BOT_TOKEN}
+  admin-chat-id: ${ADMIN_CHAT_ID}
+
+schemasync:
+  url: ${MICROSERVICE_URL}
+  api-key: ${MICROSERVICE_API_KEY}

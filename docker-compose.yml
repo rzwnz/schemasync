@@ -1,0 +1,169 @@
+networks:
+  ci-network:
+    name: ci-network
+    driver: bridge
+
+volumes:
+  pg-data:
+  pg-backups:
+  diff-store:
+  jenkins-data:
+
+services:
+  # ── Infrastructure ────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: schemasync-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sync_user
+      POSTGRES_PASSWORD: sync_pass
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init-databases.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sync_user"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: schemasync-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret}
+    ports:
+      - "6379:6379"
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    container_name: schemasync-jenkins
+    restart: unless-stopped
+    environment:
+      JAVA_OPTS: -Djenkins.install.runSetupWizard=false
+    volumes:
+      - jenkins-data:/var/jenkins_home
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/login || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+
+  # ── Microservice ──────────────────────────────────────────
+  microservice:
+    build: ./microservice
+    container_name: schema-sync
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - diff-store:/diff-store
+    environment:
+      DIFF_STORE_PATH: /diff-store
+      # Override DB hosts to point at the postgres container
+      METADB_URL: jdbc:postgresql://schemasync-postgres:5432/schema_sync_db
+      VALIDATION_DB_URL: jdbc:postgresql://schemasync-postgres:5432/validation_db
+      TEST_DB_URL: jdbc:postgresql://schemasync-postgres:5432/test_db
+      PROD_DB_URL: jdbc:postgresql://schemasync-postgres:5432/prod_db
+      JENKINS_URL: http://schemasync-jenkins:8080
+    ports:
+      - "9090:8080"
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+
+  # ── Telegram Bot ──────────────────────────────────────────
+  telegram-bot:
+    build: ./bot
+    container_name: telegram-bot
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      microservice:
+        condition: service_healthy
+    environment:
+      MICROSERVICE_URL: http://schema-sync:8080
+      SPRING_DATA_REDIS_HOST: schemasync-redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
+      JENKINS_URL: http://schemasync-jenkins:8080
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.5"
+        reservations:
+          memory: 192M
+          cpus: "0.25"
+
+  # ── Database Backup ──────────────────────────────────────
+  pg-backup:
+    image: postgres:16-alpine
+    container_name: schemasync-pg-backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: schemasync-postgres
+      PGUSER: sync_user
+      PGPASSWORD: sync_pass
+    volumes:
+      - pg-backups:/backups
+    networks:
+      - ci-network
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Starting pg_dump backup loop (every 6 hours)..."
+        while true; do
+          STAMP=$$(date +%Y%m%d_%H%M%S)
+          echo "[$$STAMP] Running pg_dumpall..."
+          pg_dumpall -c | gzip > /backups/schemasync_$$STAMP.sql.gz
+          # Retain last 14 backups (≈ 3.5 days at 6h interval)
+          ls -tp /backups/schemasync_*.sql.gz 2>/dev/null | tail -n +15 | xargs -r rm --
+          echo "[$$STAMP] Backup complete. Next in 6h."
+          sleep 21600
+        done

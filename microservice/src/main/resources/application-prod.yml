@@ -1,0 +1,15 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: false
+
+security:
+  apiKey: ${API_KEY}
+
+logging:
+  level:
+    root: INFO
+    com.example.schemasync: INFO
