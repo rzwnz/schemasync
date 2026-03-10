@@ -170,4 +170,136 @@ class MessageTemplatesTest {
     void escapeHtml_nullReturnsEmpty() {
         assertThat(MessageTemplates.escapeHtml(null)).isEmpty();
     }
+
+    // ─── Additional coverage tests ─────────────────────────────────────
+
+    @Test
+    void noParametersFound_containsWarning() {
+        assertThat(MessageTemplates.noParametersFound()).contains("No Parameters Found");
+    }
+
+    @Test
+    void parameterValueSet_containsKeyAndValue() {
+        String msg = MessageTemplates.parameterValueSet("DB_HOST", "localhost");
+        assertThat(msg).contains("DB_HOST").contains("localhost");
+    }
+
+    @Test
+    void parameterValuePrompt_containsParamName() {
+        assertThat(MessageTemplates.parameterValuePrompt("DB_PORT")).contains("DB_PORT");
+    }
+
+    @Test
+    void allParametersConfirmed_containsMessage() {
+        assertThat(MessageTemplates.allParametersConfirmed()).contains("All Parameters Confirmed");
+    }
+
+    @Test
+    void diffReady_containsReviewMessage() {
+        assertThat(MessageTemplates.diffReady()).contains("Diff Ready for Review");
+    }
+
+    @Test
+    void diffTimeout_containsTimeoutMessage() {
+        assertThat(MessageTemplates.diffTimeout()).contains("Diff Timed Out");
+    }
+
+    @Test
+    void sessionExpired_containsExpiredMessage() {
+        assertThat(MessageTemplates.sessionExpired()).contains("Session Expired");
+    }
+
+    @Test
+    void safeErrorMessage_withMessage_returnsMessage() {
+        assertThat(MessageTemplates.safeErrorMessage(new RuntimeException("test error")))
+                .isEqualTo("test error");
+    }
+
+    @Test
+    void safeErrorMessage_withNull_returnsUnknown() {
+        assertThat(MessageTemplates.safeErrorMessage(null)).isEqualTo("Unknown error");
+    }
+
+    @Test
+    void safeErrorMessage_blankMessage_returnsCauseMessage() {
+        Exception cause = new Exception("root cause");
+        Exception ex = new RuntimeException(" ", cause);
+        assertThat(MessageTemplates.safeErrorMessage(ex)).isEqualTo("root cause");
+    }
+
+    @Test
+    void safeErrorMessage_noMessageNoCause_returnsClassName() {
+        Exception ex = new NullPointerException();
+        assertThat(MessageTemplates.safeErrorMessage(ex)).isEqualTo("NullPointerException");
+    }
+
+    @Test
+    void wrongState_showsCurrentState() {
+        String msg = MessageTemplates.wrongState(BotState.IDLE, "approve changes");
+        assertThat(msg).contains("Invalid Action");
+        assertThat(msg).contains("approve changes");
+        assertThat(msg).contains(BotState.IDLE.getDisplayName());
+    }
+
+    @Test
+    void tableColumns_withColumns_listsAll() {
+        List<Map<String, Object>> columns = List.of(
+                Map.of("tableName", "users", "columnName", "id", "type", "BIGINT"),
+                Map.of("tableName", "users", "columnName", "name", "type", "VARCHAR")
+        );
+        String msg = MessageTemplates.tableColumns("users", columns);
+        assertThat(msg).contains("users").contains("id").contains("BIGINT").contains("name");
+    }
+
+    @Test
+    void tableColumns_emptyColumns_showsNotAvailable() {
+        String msg = MessageTemplates.tableColumns("empty_table", List.of());
+        assertThat(msg).contains("No column data available");
+    }
+
+    @Test
+    void tableColumns_nullColumns_showsNotAvailable() {
+        String msg = MessageTemplates.tableColumns("null_table", null);
+        assertThat(msg).contains("No column data available");
+    }
+
+    @Test
+    void status_withLastBuildNumber_showsBuildNumber() {
+        SessionData session = new SessionData();
+        session.setLastBuildNumber(42);
+        String msg = MessageTemplates.status(session);
+        assertThat(msg).contains("42");
+    }
+
+    @Test
+    void status_withEnvParams_showsParams() {
+        SessionData session = new SessionData();
+        Map<String, String> env = new HashMap<>();
+        env.put("KEY1", "val1");
+        session.setEnv(env);
+        session.setConfirmedParams(Set.of("KEY1"));
+        String msg = MessageTemplates.status(session);
+        assertThat(msg).contains("KEY1").contains("val1");
+    }
+
+    @Test
+    void welcome_emptyUsername_usesGenericGreeting() {
+        String msg = MessageTemplates.welcome("");
+        assertThat(msg).contains("Hello!");
+    }
+
+    @Test
+    void parameterDetail_emptyValue_showsNotSet() {
+        String msg = MessageTemplates.parameterDetail("KEY", "");
+        assertThat(msg).contains("not set");
+    }
+
+    @Test
+    void parameterList_allConfirmed_showsFullProgress() {
+        List<String> params = List.of("A");
+        Map<String, String> env = Map.of("A", "val");
+        Set<String> confirmed = Set.of("A");
+        String msg = MessageTemplates.parameterList("pipe", params, env, confirmed);
+        assertThat(msg).contains("1/1 confirmed");
+    }
 }
