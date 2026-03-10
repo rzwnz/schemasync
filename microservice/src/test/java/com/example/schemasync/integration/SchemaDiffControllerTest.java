@@ -122,7 +122,7 @@ public class SchemaDiffControllerTest {
         entity.setDescription("desc");
         SchemaDiffDto dto = new SchemaDiffDto(entity);
         Mockito.when(schemaDiffService.createAndGenerateDiff(any())).thenReturn(dto);
-        String body = "{\"sourceDatabase\":{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\"},\"targetDatabases\":[],\"changeLogFile\":\"file\"}";
+        String body = "{\"author\":\"test-author\"}";
         mockMvc.perform(authorized(post("/api/diffs")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body)))
@@ -183,7 +183,7 @@ public class SchemaDiffControllerTest {
 
     @Test
     void testValidateMergeConfig() throws Exception {
-        String body = "{\"changeLogFile\":\"file\",\"sourceDatabase\":{},\"targetDatabases\":[{}]}";
+        String body = "{\"changeLogFile\":\"file\",\"sourceDatabase\":{\"name\":\"src\",\"jdbcUrl\":\"url\",\"username\":\"user\"},\"targetDatabases\":[{\"name\":\"tgt\",\"jdbcUrl\":\"url\",\"username\":\"user\"}]}";
         mockMvc.perform(authorized(post("/api/merge/validate-config")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body)))
@@ -210,7 +210,7 @@ public class SchemaDiffControllerTest {
 
     @Test
     void testValidateTarget() throws Exception {
-        String body = "{\"sourceDatabase\":{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\"},\"targetDatabases\":[{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\",\"name\":\"db\"}],\"changeLogFile\":\"file\"}";
+        String body = "{\"sourceDatabase\":{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\",\"name\":\"source\"},\"targetDatabases\":[{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\",\"name\":\"db\"}],\"changeLogFile\":\"file\"}";
         mockMvc.perform(authorized(post("/api/merge/validate-target")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body)))
@@ -219,7 +219,7 @@ public class SchemaDiffControllerTest {
 
     @Test
     void testTransferData() throws Exception {
-        String body = "{\"sourceDatabase\":{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\"},\"targetDatabases\":[{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\",\"name\":\"db\"}],\"changeLogFile\":\"file\"}";
+        String body = "{\"sourceDatabase\":{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\",\"name\":\"source\"},\"targetDatabases\":[{\"jdbcUrl\":\"url\",\"username\":\"user\",\"password\":\"pass\",\"name\":\"db\"}],\"changeLogFile\":\"file\"}";
         mockMvc.perform(authorized(post("/api/merge/transfer-data")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body)))

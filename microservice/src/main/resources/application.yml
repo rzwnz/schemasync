@@ -34,11 +34,11 @@ validation:
 testdb:
   url: ${TEST_DB_URL:jdbc:postgresql://servertest:5432/myapp}
   username: ${TEST_DB_USER:schema_admin}
-  password: ${TEST_DB_PASS}
+  password: ${TEST_DB_PASS:}
 proddb:
   url: ${PROD_DB_URL:jdbc:postgresql://serverprod:5432/myapp}
   username: ${PROD_DB_USER:schema_admin}
-  password: ${PROD_DB_PASS}
+  password: ${PROD_DB_PASS:}
 
 spring.liquibase:
   enabled: true
@@ -47,8 +47,8 @@ spring.liquibase:
 # Jenkins settings (if using)
 jenkins:
   url: ${JENKINS_URL:http://localhost:8081}
-  user: ${JENKINS_USER}
-  token: ${JENKINS_TOKEN}
+  user: ${JENKINS_USER:}
+  token: ${JENKINS_TOKEN:}
   jobName: ${JENKINS_JOB_NAME:schema-apply}
 
 # OpenAPI config (Springdoc + Scalar)
